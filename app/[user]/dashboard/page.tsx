@@ -121,7 +121,6 @@ export default function DashboardPage() {
   const [penaltyPoints, setPenaltyPoints] = useState(0);
   const [profileId, setProfileId] = useState<string | null>(null);
 
-  // SEKARANG MENGGUNAKAN ARRAY UNTUK MENAMPUNG BANYAK HUKUMAN
   const [activePunishments, setActivePunishments] = useState<
     { id: string; text: string }[]
   >([]);
@@ -131,10 +130,11 @@ export default function DashboardPage() {
   const [gachaResult, setGachaResult] = useState<string | null>(null);
   const [wheelRotation, setWheelRotation] = useState(0);
 
-  const getTodayDateString = () => {
+  // Mengambil tanggal hari ini format WIB (YYYY-MM-DD)
+  const getWIBDateString = () => {
     const now = new Date();
-    now.setHours(now.getHours() - 4);
-    return now.toISOString().split("T")[0];
+    const wibTime = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+    return wibTime.toISOString().split("T")[0];
   };
 
   useEffect(() => {
@@ -154,17 +154,73 @@ export default function DashboardPage() {
     const CapitalizedName = isRidwan ? "Ridwan" : "Anna";
     const { data: profileData } = await supabase
       .from("profiles")
-      .select("id, penalty_points")
+      .select("*")
       .eq("name", CapitalizedName)
       .single();
 
     if (profileData) {
       setProfileId(profileData.id);
-      setPenaltyPoints(profileData.penalty_points);
 
-      if (profileData.penalty_points >= 5) setShowGacha(true);
+      const todayString = getWIBDateString();
+      let currentPoints = profileData.penalty_points;
+      let dbLastCheck = profileData.last_check_date;
 
-      // Mengambil SEMUA hukuman yang masih 'pending' tanpa .limit(1)
+      // --- KOREKSI SISTEM PENGHITUNG HUKUMAN OTOMATIS ---
+      if (!dbLastCheck) {
+        // Jika user baru pertama kali terdaftar, tandai hari ini sebagai awal pengecekan
+        await supabase
+          .from("profiles")
+          .update({ last_check_date: todayString })
+          .eq("id", profileData.id);
+      } else if (dbLastCheck !== todayString) {
+        // Jika hari berganti (misal terakhir cek 4 Juni, dan hari ini sudah 5 Juni)
+        const datesToCheck = [];
+        let loopDateStr = dbLastCheck;
+
+        // Loop mengumpulkan semua tanggal yang perlu dievaluasi (termasuk kemarin)
+        while (loopDateStr !== todayString) {
+          datesToCheck.push(loopDateStr);
+
+          // Maju 1 hari secara aman
+          const d = new Date(loopDateStr);
+          d.setDate(d.getDate() + 1);
+          loopDateStr = d.toISOString().split("T")[0];
+        }
+
+        if (datesToCheck.length > 0) {
+          // Ambil riwayat presensi nyata yang berhasil dilakukan di hari-hari tersebut
+          const { data: pastPresences } = await supabase
+            .from("daily_presence")
+            .select("date_only")
+            .eq("profile_id", profileData.id)
+            .in("date_only", datesToCheck);
+
+          // Kalkulasi matematika: (Total Hari Terlewat * 5 Kewajiban) - Jumlah klik asli yang ada di DB
+          const totalRequired = datesToCheck.length * 5;
+          const totalDone = pastPresences ? pastPresences.length : 0;
+          const pointsToAdd = totalRequired - totalDone;
+
+          if (pointsToAdd > 0) {
+            currentPoints += pointsToAdd;
+          }
+
+          // Sinkronisasikan poin penalti baru ke Supabase & kunci tanggal evaluasi hari ini
+          await supabase
+            .from("profiles")
+            .update({
+              penalty_points: currentPoints,
+              last_check_date: todayString,
+            })
+            .eq("id", profileData.id);
+        }
+      }
+      // --- AKHIR SISTEM PENGHITUNG ---
+
+      setPenaltyPoints(currentPoints);
+
+      // Trigger Gacha Wheel meledak di layar jika akumulasi poin >= 5
+      if (currentPoints >= 5) setShowGacha(true);
+
       const { data: pendingGachas } = await supabase
         .from("gacha_history")
         .select("id, penalty_result")
@@ -180,7 +236,6 @@ export default function DashboardPage() {
         setActivePunishments(formattedPunishments);
       }
 
-      const todayString = getTodayDateString();
       const { data: presenceData } = await supabase
         .from("daily_presence")
         .select("activity_type, logged_at")
@@ -216,7 +271,7 @@ export default function DashboardPage() {
     });
     setPresence((prev: any) => ({ ...prev, [activity]: `${timeString} WIB` }));
 
-    const todayString = getTodayDateString();
+    const todayString = getWIBDateString();
     await supabase.from("daily_presence").insert([
       {
         profile_id: profileId,
@@ -259,7 +314,6 @@ export default function DashboardPage() {
         .select("id")
         .single();
 
-      // Tambahkan hukuman baru ke tumpukan hukuman aktif
       if (newGacha) {
         setActivePunishments((prev) => [
           { id: newGacha.id, text: resultText },
@@ -276,12 +330,8 @@ export default function DashboardPage() {
     }, 5000);
   };
 
-  // Menerima parameter ID hukuman yang diselesaikan
   const handleCompletePunishment = async (punishmentId: string) => {
-    // Hapus dari UI seketika
     setActivePunishments((prev) => prev.filter((p) => p.id !== punishmentId));
-
-    // Update di database menjadi 'done'
     await supabase
       .from("gacha_history")
       .update({
@@ -419,7 +469,6 @@ export default function DashboardPage() {
           </div>
         </motion.div>
 
-        {/* --- LIST TUMPUKAN HUKUMAN AKTIF --- */}
         <AnimatePresence>
           {activePunishments.map((punishment) => (
             <motion.div
@@ -450,7 +499,6 @@ export default function DashboardPage() {
             </motion.div>
           ))}
         </AnimatePresence>
-        {/* --- AKHIR LIST HUKUMAN --- */}
 
         <motion.button
           whileHover={{ scale: presence.hadir ? 1 : 1.02 }}
