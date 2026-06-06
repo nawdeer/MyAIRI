@@ -130,10 +130,17 @@ export default function DashboardPage() {
   const [gachaResult, setGachaResult] = useState<string | null>(null);
   const [wheelRotation, setWheelRotation] = useState(0);
 
-  // Mengambil tanggal hari ini format WIB (YYYY-MM-DD)
+  // Mengambil tanggal dengan zona WIB dan batas pergantian hari pukul 04.00 pagi
   const getWIBDateString = () => {
     const now = new Date();
+    // 1. Ambil waktu UTC lalu tambah 7 jam untuk mendapatkan waktu WIB asli
     const wibTime = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+
+    // 2. Mundurkan 4 jam.
+    // Jadi jika sekarang jam 03.00 pagi (WIB), sistem akan menganggapnya masih jam 23.00 (hari kemarin).
+    // Hari baru di sistem benar-benar akan tercatat berubah ketika jam asli menunjukkan 04.00 WIB.
+    wibTime.setHours(wibTime.getHours() - 4);
+
     return wibTime.toISOString().split("T")[0];
   };
 
