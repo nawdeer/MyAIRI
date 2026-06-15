@@ -8,6 +8,7 @@ import {
   CalendarDays,
   CheckCircle2,
   XCircle,
+  AlertCircle,
   Utensils,
   Moon,
   BookOpen,
@@ -39,7 +40,6 @@ export default function HistoryPage() {
     name: isRidwan ? "Ridwan" : "Anna",
   };
 
-  // State untuk menyimpan data yang ditarik dari Supabase
   const [historyData, setHistoryData] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -51,7 +51,6 @@ export default function HistoryPage() {
     setIsLoading(true);
     const CapitalizedName = isRidwan ? "Ridwan" : "Anna";
 
-    // 1. Ambil ID Profil
     const { data: profile } = await supabase
       .from("profiles")
       .select("id")
@@ -59,21 +58,19 @@ export default function HistoryPage() {
       .single();
 
     if (profile) {
-      // 2. Ambil semua riwayat presensi berdasarkan ID, urutkan dari yang terbaru
       const { data: logs } = await supabase
         .from("daily_presence")
         .select("*")
         .eq("profile_id", profile.id)
         .order("date_only", { ascending: false })
-        .order("logged_at", { ascending: false });
+        .order("logged_at", { ascending: true }); // Ubah ke true agar urutan jam makan dari pagi ke malam
 
       if (logs) {
-        // 3. Logika Pengelompokan (Grouping) data berdasarkan tanggal
+        // --- LOGIKA GROUPING BARU (DENGAN ARRAY MAKAN) ---
         const groupedData = logs.reduce((acc: any, log) => {
-          const date = log.date_only; // Contoh: '2026-06-04'
+          const date = log.date_only;
 
           if (!acc[date]) {
-            // Ubah format tanggal menjadi bahasa Indonesia
             const dateObj = new Date(date);
             const dateStr = dateObj.toLocaleDateString("id-ID", {
               weekday: "long",
@@ -82,12 +79,11 @@ export default function HistoryPage() {
               year: "numeric",
             });
 
-            // Siapkan template kosong untuk hari tersebut
             acc[date] = {
               date: dateStr,
               logs: {
                 hadir: null,
-                makan: null,
+                makan: [], // Makan dijadikan Array
                 tidur: null,
                 belajar: null,
                 mandi: null,
@@ -95,7 +91,6 @@ export default function HistoryPage() {
             };
           }
 
-          // Isi jam presensi ke dalam kategori yang tepat
           const timeString = new Date(log.logged_at).toLocaleTimeString(
             "id-ID",
             {
@@ -103,13 +98,20 @@ export default function HistoryPage() {
               minute: "2-digit",
             },
           );
-          acc[date].logs[log.activity_type] = `${timeString} WIB`;
+
+          if (log.activity_type === "makan") {
+            acc[date].logs.makan.push(`${timeString} WIB`);
+          } else {
+            acc[date].logs[log.activity_type] = `${timeString} WIB`;
+          }
 
           return acc;
         }, {});
+        // --- AKHIR LOGIKA GROUPING ---
 
-        // Ubah dari format Object ke Array agar bisa di-map di UI
-        setHistoryData(Object.values(groupedData));
+        // Sortir hasil grouping dari tanggal terbaru ke terlama
+        const sortedArray = Object.values(groupedData).reverse();
+        setHistoryData(sortedArray);
       }
     }
     setIsLoading(false);
@@ -141,7 +143,6 @@ export default function HistoryPage() {
       </div>
 
       <div className="max-w-md mx-auto flex flex-col gap-6">
-        {/* Tampilan saat data sedang ditarik dari database */}
         {isLoading && (
           <div className="flex flex-col items-center justify-center py-10 text-slate-500">
             <Loader2 className="animate-spin mb-2" size={32} />
@@ -149,7 +150,6 @@ export default function HistoryPage() {
           </div>
         )}
 
-        {/* Tampilan jika belum ada data sama sekali */}
         {!isLoading && historyData.length === 0 && (
           <div className="text-center py-10 bg-white/50 rounded-[2rem] border-2 border-dashed border-slate-300 text-slate-500">
             <p className="font-medium">
@@ -158,12 +158,24 @@ export default function HistoryPage() {
           </div>
         )}
 
-        {/* Tampilan Riwayat Asli */}
         {!isLoading &&
           historyData.map((day, index) => {
-            const missedCount = Object.values(day.logs).filter(
-              (time) => time === null,
+            // --- KALKULATOR POIN HUKUMAN PER HARI ---
+            let totalPenalty = 0;
+
+            // 1. Cek aktivitas selain makan
+            const nonMakanKeys = ["hadir", "tidur", "belajar", "mandi"];
+            const missedNonMakan = nonMakanKeys.filter(
+              (key) => day.logs[key] === null,
             ).length;
+            totalPenalty += missedNonMakan;
+
+            // 2. Cek khusus makan (Maksimal +2 poin)
+            const makanCount = day.logs.makan.length;
+            if (makanCount === 0) totalPenalty += 2;
+            else if (makanCount === 1) totalPenalty += 1;
+            // Jika makanCount >= 2, penalty bertambah 0 (Aman)
+            // --- AKHIR KALKULATOR POIN ---
 
             return (
               <motion.div
@@ -177,9 +189,9 @@ export default function HistoryPage() {
                   <span className="font-extrabold text-slate-700">
                     {day.date}
                   </span>
-                  {missedCount > 0 ? (
+                  {totalPenalty > 0 ? (
                     <span className="text-xs font-bold bg-red-100 text-red-600 px-2 py-1 rounded-full">
-                      +{missedCount} Poin Hukuman
+                      +{totalPenalty} Poin Hukuman
                     </span>
                   ) : (
                     <span className="text-xs font-bold bg-green-100 text-green-700 px-2 py-1 rounded-full">
@@ -190,6 +202,82 @@ export default function HistoryPage() {
 
                 <div className="flex flex-col gap-3">
                   {activities.map((act) => {
+                    const isMakan = act.id === "makan";
+
+                    // --- RENDER KHUSUS UNTUK MAKAN ---
+                    if (isMakan) {
+                      const mLogs = day.logs.makan;
+                      const mCount = mLogs.length;
+
+                      // Format template 3 slot waktu
+                      const t1 = mLogs[0] || "Terlewat";
+                      const t2 = mLogs[1] || "Terlewat";
+                      const t3 = mLogs[2] || "Terlewat";
+                      const timeStringMakan = `${t1}, ${t2}, ${t3}`;
+
+                      // Penentuan UI status (Aman / Warning / Gagal)
+                      const isMissedPenalty = mCount < 2;
+                      let statusIcon;
+                      let textColor = "";
+
+                      if (mCount >= 3) {
+                        statusIcon = (
+                          <CheckCircle2
+                            size={18}
+                            className="text-green-500 shrink-0 mt-0.5"
+                          />
+                        );
+                        textColor = "text-slate-600"; // Sempurna
+                      } else if (mCount === 2) {
+                        statusIcon = (
+                          <AlertCircle
+                            size={18}
+                            className="text-amber-500 shrink-0 mt-0.5"
+                          />
+                        );
+                        textColor = "text-amber-600"; // Kurang 1 tapi aman
+                      } else {
+                        statusIcon = (
+                          <XCircle
+                            size={18}
+                            className="text-red-500 shrink-0 mt-0.5"
+                          />
+                        );
+                        textColor = "text-red-500"; // Kena Denda
+                      }
+
+                      return (
+                        <div
+                          key={act.id}
+                          className="flex items-start justify-between bg-slate-50 p-3 rounded-2xl"
+                        >
+                          <div className="flex items-center gap-3 w-1/3">
+                            <div
+                              className={`p-2 rounded-full ${isMissedPenalty ? "bg-red-100 text-red-500" : theme.accent}`}
+                            >
+                              {act.icon}
+                            </div>
+                            <span
+                              className={`font-semibold ${isMissedPenalty ? "text-slate-400" : "text-slate-700"}`}
+                            >
+                              {act.label}
+                            </span>
+                          </div>
+
+                          <div className="flex items-start gap-2 text-right justify-end w-2/3 pl-2">
+                            <span
+                              className={`text-[10px] sm:text-xs font-bold leading-relaxed ${textColor}`}
+                            >
+                              {timeStringMakan}
+                            </span>
+                            {statusIcon}
+                          </div>
+                        </div>
+                      );
+                    }
+                    // --- AKHIR RENDER MAKAN ---
+
+                    // --- RENDER STANDAR UNTUK NON-MAKAN ---
                     const timeLogged =
                       day.logs[act.id as keyof typeof day.logs];
                     const isMissed = timeLogged === null;

@@ -109,9 +109,10 @@ export default function DashboardPage() {
       : "bg-pink-600 hover:bg-pink-700",
   };
 
+  // State presence sekarang menggunakan Array khusus untuk makan
   const [presence, setPresence] = useState<any>({
     hadir: null,
-    makan: null,
+    makan: [], // Diubah menjadi array untuk menampung max 3 jam
     tidur: null,
     belajar: null,
     mandi: null,
@@ -130,17 +131,10 @@ export default function DashboardPage() {
   const [gachaResult, setGachaResult] = useState<string | null>(null);
   const [wheelRotation, setWheelRotation] = useState(0);
 
-  // Mengambil tanggal dengan zona WIB dan batas pergantian hari pukul 04.00 pagi
   const getWIBDateString = () => {
     const now = new Date();
-    // 1. Ambil waktu UTC lalu tambah 7 jam untuk mendapatkan waktu WIB asli
     const wibTime = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-
-    // 2. Mundurkan 4 jam.
-    // Jadi jika sekarang jam 03.00 pagi (WIB), sistem akan menganggapnya masih jam 23.00 (hari kemarin).
-    // Hari baru di sistem benar-benar akan tercatat berubah ketika jam asli menunjukkan 04.00 WIB.
-    wibTime.setHours(wibTime.getHours() - 4);
-
+    wibTime.setHours(wibTime.getHours() - 4); // Batas jam 4 pagi
     return wibTime.toISOString().split("T")[0];
   };
 
@@ -172,46 +166,61 @@ export default function DashboardPage() {
       let currentPoints = profileData.penalty_points;
       let dbLastCheck = profileData.last_check_date;
 
-      // --- KOREKSI SISTEM PENGHITUNG HUKUMAN OTOMATIS ---
+      // --- KOREKSI SISTEM PENGHITUNG HUKUMAN (Dengan Logika Makan 3x) ---
       if (!dbLastCheck) {
-        // Jika user baru pertama kali terdaftar, tandai hari ini sebagai awal pengecekan
         await supabase
           .from("profiles")
           .update({ last_check_date: todayString })
           .eq("id", profileData.id);
       } else if (dbLastCheck !== todayString) {
-        // Jika hari berganti (misal terakhir cek 4 Juni, dan hari ini sudah 5 Juni)
         const datesToCheck = [];
         let loopDateStr = dbLastCheck;
 
-        // Loop mengumpulkan semua tanggal yang perlu dievaluasi (termasuk kemarin)
         while (loopDateStr !== todayString) {
           datesToCheck.push(loopDateStr);
-
-          // Maju 1 hari secara aman
           const d = new Date(loopDateStr);
           d.setDate(d.getDate() + 1);
           loopDateStr = d.toISOString().split("T")[0];
         }
 
         if (datesToCheck.length > 0) {
-          // Ambil riwayat presensi nyata yang berhasil dilakukan di hari-hari tersebut
           const { data: pastPresences } = await supabase
             .from("daily_presence")
-            .select("date_only")
+            .select("date_only, activity_type")
             .eq("profile_id", profileData.id)
             .in("date_only", datesToCheck);
 
-          // Kalkulasi matematika: (Total Hari Terlewat * 5 Kewajiban) - Jumlah klik asli yang ada di DB
-          const totalRequired = datesToCheck.length * 5;
-          const totalDone = pastPresences ? pastPresences.length : 0;
-          const pointsToAdd = totalRequired - totalDone;
+          let pointsToAdd = 0;
+
+          // Evaluasi per hari untuk tingkat akurasi tinggi
+          datesToCheck.forEach((date) => {
+            const dayLogs = pastPresences
+              ? pastPresences.filter((p) => p.date_only === date)
+              : [];
+
+            // Hitung aktivitas non-makan (Max 4)
+            const nonMakanLogs = new Set(
+              dayLogs
+                .filter((p) => p.activity_type !== "makan")
+                .map((p) => p.activity_type),
+            ).size;
+            const missingNonMakan = Math.max(0, 4 - nonMakanLogs); // Denda dari Hadir, Tidur, Belajar, Mandi
+
+            // Hitung aktivitas makan (Max Penalti +2, Makan ke-3 opsional)
+            const makanCount = dayLogs.filter(
+              (p) => p.activity_type === "makan",
+            ).length;
+            let missingMakan = 2; // Default denda kalau gak makan sama sekali
+            if (makanCount === 1) missingMakan = 1; // Kurang 1 kali makan
+            if (makanCount >= 2) missingMakan = 0; // Makan 2 kali atau 3 kali dianggap AMAN
+
+            pointsToAdd += missingNonMakan + missingMakan;
+          });
 
           if (pointsToAdd > 0) {
             currentPoints += pointsToAdd;
           }
 
-          // Sinkronisasikan poin penalti baru ke Supabase & kunci tanggal evaluasi hari ini
           await supabase
             .from("profiles")
             .update({
@@ -225,7 +234,6 @@ export default function DashboardPage() {
 
       setPenaltyPoints(currentPoints);
 
-      // Trigger Gacha Wheel meledak di layar jika akumulasi poin >= 5
       if (currentPoints >= 5) setShowGacha(true);
 
       const { data: pendingGachas } = await supabase
@@ -252,31 +260,43 @@ export default function DashboardPage() {
       if (presenceData) {
         const currentPresence: any = {
           hadir: null,
-          makan: null,
+          makan: [], // Array khusus untuk makan
           tidur: null,
           belajar: null,
           mandi: null,
         };
+
         presenceData.forEach((log) => {
           const time = new Date(log.logged_at).toLocaleTimeString("id-ID", {
             hour: "2-digit",
             minute: "2-digit",
           });
-          currentPresence[log.activity_type] = `${time} WIB`;
+
+          if (log.activity_type === "makan") {
+            currentPresence.makan.push(`${time} WIB`);
+          } else {
+            currentPresence[log.activity_type] = `${time} WIB`;
+          }
         });
         setPresence(currentPresence);
       }
     }
   };
 
-  const handlePresence = async (activity: keyof typeof presence) => {
+  const handlePresence = async (activity: string) => {
     if (!profileId) return;
     const now = new Date();
     const timeString = now.toLocaleTimeString("id-ID", {
       hour: "2-digit",
       minute: "2-digit",
     });
-    setPresence((prev: any) => ({ ...prev, [activity]: `${timeString} WIB` }));
+
+    setPresence((prev: any) => {
+      if (activity === "makan") {
+        return { ...prev, makan: [...prev.makan, `${timeString} WIB`] };
+      }
+      return { ...prev, [activity]: `${timeString} WIB` };
+    });
 
     const todayString = getWIBDateString();
     await supabase.from("daily_presence").insert([
@@ -359,6 +379,13 @@ export default function DashboardPage() {
     { id: "belajar", label: "Belajar", icon: <BookOpen size={24} /> },
     { id: "mandi", label: "Mandi", icon: <Droplets size={24} /> },
   ] as const;
+
+  // Fungsi untuk merapikan teks jam makan (misal: "08:00, 13:30 WIB")
+  const formatMakanTimes = (logs: string[]) => {
+    if (logs.length === 0) return "_";
+    const timesOnly = logs.map((log) => log.replace(" WIB", ""));
+    return timesOnly.join(", ") + " WIB";
+  };
 
   return (
     <main
@@ -529,30 +556,74 @@ export default function DashboardPage() {
 
         <div className="grid grid-cols-2 gap-4">
           {activities.map((item, index) => {
-            const timeLogged = presence[item.id as keyof typeof presence];
+            // --- LOGIKA KHUSUS TOMBOL MAKAN ---
+            const isMakan = item.id === "makan";
+            const makanLogs = presence.makan || [];
+            const makanCount = makanLogs.length;
+
+            const isCompleted = isMakan
+              ? makanCount >= 3
+              : !!presence[item.id as keyof typeof presence];
+            const isAnyActive = isMakan
+              ? makanCount > 0
+              : !!presence[item.id as keyof typeof presence];
+
+            const btnLabel = isMakan
+              ? makanCount === 0
+                ? "Makan"
+                : `Makan ${makanCount}/3`
+              : item.label;
+
+            const timeLabel = isMakan
+              ? formatMakanTimes(makanLogs)
+              : presence[item.id as keyof typeof presence] || "_";
+
+            // LOGIKA WARNA PROGRESIF (Mengisi Daya)
+            let progressiveStyle = "";
+            if (isMakan) {
+              if (makanCount === 0) {
+                progressiveStyle = `${theme.inactiveBtn} ${theme.border}`;
+              } else if (makanCount === 1) {
+                progressiveStyle = isRidwan
+                  ? "bg-blue-300 text-white border-transparent"
+                  : "bg-pink-300 text-white border-transparent";
+              } else if (makanCount === 2) {
+                progressiveStyle = isRidwan
+                  ? "bg-blue-400 text-white border-transparent"
+                  : "bg-pink-400 text-white border-transparent";
+              } else {
+                progressiveStyle = `${theme.activeBtn} border-transparent opacity-90 cursor-not-allowed`; // 3 Klik (Sama dengan tombol lain)
+              }
+            } else {
+              if (isCompleted) {
+                progressiveStyle = `${theme.activeBtn} border-transparent opacity-90 cursor-not-allowed`;
+              } else {
+                progressiveStyle = `${theme.inactiveBtn} ${theme.border}`;
+              }
+            }
+            // --- AKHIR LOGIKA KHUSUS ---
+
             return (
               <motion.button
                 key={item.id}
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: index * 0.1 }}
-                whileHover={{ scale: timeLogged ? 1 : 1.05 }}
-                whileTap={{ scale: timeLogged ? 1 : 0.95 }}
-                onClick={() => handlePresence(item.id as keyof typeof presence)}
-                disabled={!!timeLogged}
-                className={`flex flex-col items-center justify-center p-6 rounded-[2rem] border-4 shadow-sm transition-all relative
-                  ${timeLogged ? `${theme.activeBtn} border-transparent cursor-not-allowed` : `${theme.inactiveBtn} ${theme.border}`}
-                `}
+                whileHover={{ scale: isCompleted ? 1 : 1.05 }}
+                whileTap={{ scale: isCompleted ? 1 : 0.95 }}
+                onClick={() => handlePresence(item.id)}
+                disabled={isCompleted}
+                className={`flex flex-col items-center justify-center p-6 rounded-[2rem] border-4 shadow-sm transition-colors duration-500 relative ${progressiveStyle}`}
               >
                 <div
-                  className={`p-3 rounded-full mb-2 ${timeLogged ? "bg-white/20" : theme.iconBg}`}
+                  className={`p-3 rounded-full mb-2 transition-colors duration-500 ${isAnyActive ? "bg-white/20" : theme.iconBg}`}
                 >
                   {item.icon}
                 </div>
-                <span className="font-bold">{item.label}</span>
-                {timeLogged ? (
-                  <span className="text-[11px] mt-2 font-medium bg-black/10 px-2 py-0.5 rounded-full">
-                    {timeLogged}
+                <span className="font-bold">{btnLabel}</span>
+                {isAnyActive ? (
+                  <span className="text-[10px] md:text-[11px] mt-2 font-medium bg-black/10 px-2 py-0.5 rounded-full text-center leading-tight">
+                    {timeLabel}
                   </span>
                 ) : (
                   <span className="text-[11px] mt-2 text-transparent">_</span>
