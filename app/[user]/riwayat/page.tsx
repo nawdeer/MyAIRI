@@ -81,9 +81,10 @@ export default function HistoryPage() {
 
             acc[date] = {
               date: dateStr,
+              rawDate: date, // TAMBAHAN: Menyimpan tanggal asli (YYYY-MM-DD) untuk kunci pengurutan
               logs: {
                 hadir: null,
-                makan: [], // Makan dijadikan Array
+                makan: [],
                 tidur: null,
                 belajar: null,
                 mandi: null,
@@ -107,10 +108,16 @@ export default function HistoryPage() {
 
           return acc;
         }, {});
-        // --- AKHIR LOGIKA GROUPING ---
 
-        // Sortir hasil grouping dari tanggal terbaru ke terlama
-        const sortedArray = Object.values(groupedData).reverse();
+        // --- SORTING EKSPLISIT: TERBARU DI ATAS ---
+        const sortedArray = Object.values(groupedData).sort(
+          (a: any, b: any) => {
+            return (
+              new Date(b.rawDate).getTime() - new Date(a.rawDate).getTime()
+            );
+          },
+        );
+
         setHistoryData(sortedArray);
       }
     }
