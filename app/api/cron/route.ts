@@ -8,14 +8,12 @@ const supabase = createClient(
 
 export async function GET(req: Request) {
   try {
-    // Menangkap parameter dari URL, contoh: /api/cron?tipe=sarapan
     const { searchParams } = new URL(req.url);
     const tipe = searchParams.get("tipe");
 
     let heading = "";
     let message = "";
 
-    // Menentukan isi pesan berdasarkan tipe jadwal
     switch (tipe) {
       case "kehadiran":
         heading = "Absen Pagi Dulu! ☀️";
@@ -58,7 +56,6 @@ export async function GET(req: Request) {
         );
     }
 
-    // Ambil data user yang punya ID OneSignal
     const { data: profiles, error } = await supabase
       .from("profiles")
       .select("name, onesignal_id")
@@ -66,37 +63,55 @@ export async function GET(req: Request) {
 
     if (error) throw error;
 
-    // CATATAN UNTUK NANTI:
-    // Logika "Cek jumlah klik" (makan < 1, dll) akan kita tambahkan setelah
-    // kita membuat tabel database untuk riwayat presensi harian di tahap Frontend.
-    // Sementara ini, kita biarkan apinya mengirim pesan dulu sesuai jam.
+    // DETEKTOR 1: Apakah ada user yang punya ID?
+    if (!profiles || profiles.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: "Database kosong. Tidak ada user yang memiliki onesignal_id.",
+      });
+    }
 
-    // Tembakkan notifikasi
+    const logPenyebaran = [];
+
     for (const profile of profiles) {
-      await fetch("https://onesignal.com/api/v1/notifications", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Basic ${process.env.ONESIGNAL_REST_API_KEY}`,
+      const response = await fetch(
+        "https://onesignal.com/api/v1/notifications",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Basic ${process.env.ONESIGNAL_REST_API_KEY}`,
+          },
+          body: JSON.stringify({
+            app_id: process.env.NEXT_PUBLIC_ONESIGNAL_APP_ID,
+            include_subscription_ids: [profile.onesignal_id],
+            headings: { en: heading },
+            contents: { en: message },
+            url: `https://myairi.vercel.app/${profile.name.toLowerCase()}/dashboard`,
+          }),
         },
-        body: JSON.stringify({
-          app_id: process.env.NEXT_PUBLIC_ONESIGNAL_APP_ID,
-          include_subscription_ids: [profile.onesignal_id],
-          headings: { en: heading },
-          contents: { en: message },
-          url: `https://myairi.vercel.app/${profile.name.toLowerCase()}/dashboard`,
-        }),
+      );
+
+      // DETEKTOR 2: Tangkap balasan asli dari OneSignal
+      const responseData = await response.json();
+      logPenyebaran.push({
+        target: profile.name,
+        status_pengiriman: response.ok
+          ? "Berhasil dikirim ke OneSignal"
+          : "Ditolak oleh OneSignal",
+        detail_dari_onesignal: responseData,
       });
     }
 
     return NextResponse.json({
       success: true,
-      message: `Notifikasi ${tipe} berhasil disebar!`,
+      message: `Proses tipe [${tipe}] selesai dieksekusi.`,
+      laporan_lengkap: logPenyebaran,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error(error);
     return NextResponse.json(
-      { success: false, error: "Gagal mengirim notifikasi" },
+      { success: false, error: error.message },
       { status: 500 },
     );
   }
