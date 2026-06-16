@@ -10,6 +10,7 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const tipe = searchParams.get("tipe");
+    const targetUser = searchParams.get("user"); // Parameter baru untuk target individu
 
     let heading = "";
     let message = "";
@@ -56,18 +57,23 @@ export async function GET(req: Request) {
         );
     }
 
-    const { data: profiles, error } = await supabase
-      .from("profiles")
-      .select("name, onesignal_id")
-      .not("onesignal_id", "is", null);
+    // Mengatur logika query: Filter user jika parameter 'user' ada, jika tidak, ambil semua
+    let query = supabase.from("profiles").select("name, onesignal_id");
+
+    if (targetUser) {
+      query = query.ilike("name", targetUser);
+    } else {
+      query = query.not("onesignal_id", "is", null);
+    }
+
+    const { data: profiles, error } = await query;
 
     if (error) throw error;
 
-    // DETEKTOR 1: Apakah ada user yang punya ID?
     if (!profiles || profiles.length === 0) {
       return NextResponse.json({
         success: false,
-        error: "Database kosong. Tidak ada user yang memiliki onesignal_id.",
+        error: "Tidak ada user yang ditemukan di database.",
       });
     }
 
@@ -92,7 +98,6 @@ export async function GET(req: Request) {
         },
       );
 
-      // DETEKTOR 2: Tangkap balasan asli dari OneSignal
       const responseData = await response.json();
       logPenyebaran.push({
         target: profile.name,
@@ -105,7 +110,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       success: true,
-      message: `Proses tipe [${tipe}] selesai dieksekusi.`,
+      message: `Proses tipe [${tipe}] untuk ${targetUser || "semua orang"} selesai.`,
       laporan_lengkap: logPenyebaran,
     });
   } catch (error: any) {
